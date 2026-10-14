@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS
   Address_ STRING,
   Join_date DATE,
   Loaded_timestamp TIMESTAMP,
-  Team_Id INT64,
+  Team_id int64,
   Effective_Start_Date TIMESTAMP,
   Effective_End_Date TIMESTAMP,
   Is_Current BOOL

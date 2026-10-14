@@ -10,118 +10,213 @@ from airflow.providers.google.cloud.operators.bigquery import (
     BigQueryInsertJobOperator,
 )
 
+
 # ==================================================
-# GCP CONFIGURATION
+# 1. CONFIGURATION
 # ==================================================
 
 PROJECT_ID = "suresh-dataengineering"
 
-BUCKET = "source_landing_zone"
-SOURCE_OBJECT = "customers.csv"
+# Source GCS file
+SOURCE_BUCKET = "source_landing_zone"
+SOURCE_FILE = "customers.csv"
 
+# BigQuery location: all datasets are in US
+BQ_LOCATION = "US"
+
+# BigQuery tables
 BRONZE_TABLE = (
-    f"{PROJECT_ID}.Bronze_layer.customers_raw_data"
+    "suresh-dataengineering.Bronze_layer.customers_raw_data"
 )
+
 SILVER_TABLE = (
-    f"{PROJECT_ID}.Silver_layer.customers_stage_data"
+    "suresh-dataengineering.Silver_layer.customers_stage_data"
 )
+
 GOLDEN_TABLE = (
-    f"{PROJECT_ID}.Golden_layer.Customers_curated_data"
+    "suresh-dataengineering.Golden_layer.Customers_curated_data"
 )
 
-# Both audit tables use your existing Audit_layer dataset.
 BRONZE_AUDIT_TABLE = (
-    f"{PROJECT_ID}.Audit_layer.bronze_audit_table"
-)
-SILVER_AUDIT_TABLE = (
-    f"{PROJECT_ID}.Audit_layer.silver_audit_table"
+    "suresh-dataengineering.Audit_layer.bronze_audit_table"
 )
 
-# SQL and DAG folders are siblings in your VS Code project.
-SQL_DIR = Path(__file__).resolve().parent.parent / "SQL"
+SILVER_AUDIT_TABLE = (
+    "suresh-dataengineering.Audit_layer.silver_audit_table"
+)
+
+
+# ==================================================
+# 2. SQL FILE PATH
+# ==================================================
+
+# Expected structure:
+# dags/
+#   Invest_pipeline_dag.py
+#   SQL/
+#     Bronze.sql
+#     Silver.sql
+#     Golden_create.sql
+#     Golden_Expire.sql
+#     Golden_Insert.sql
+#     Audit.sql
+
+DAG_DIR = Path(__file__).resolve().parent
+SQL_DIR = DAG_DIR / "SQL"
 
 
 def read_sql(filename):
-    return (SQL_DIR / filename).read_text(encoding="utf-8")
+    """Read SQL files uploaded beside this DAG."""
 
+    sql_path = SQL_DIR / filename
+
+    if not sql_path.is_file():
+        raise FileNotFoundError(
+            f"SQL file not found: {sql_path}"
+        )
+
+    return sql_path.read_text(encoding="utf-8")
+
+
+# ==================================================
+# 3. DEFAULT ARGUMENTS
+# ==================================================
 
 default_args = {
     "owner": "data-engineering",
-    "retries": 2,
+    "depends_on_past": False,
+    "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
 
 
+# ==================================================
+# 4. DAG DEFINITION
+# ==================================================
+
 with DAG(
-    dag_id="customer_bronze_silver_golden_pipeline",
+    dag_id="investment_customer_pipeline",
+    description="GCS to BigQuery Bronze, Silver and Golden pipeline",
     default_args=default_args,
-    description="Customer pipeline with BigQuery audit and SCD Type 2",
     start_date=datetime(2026, 10, 1),
     schedule="0 2 * * *",
     catchup=False,
     max_active_runs=1,
-    tags=["customer", "bigquery", "scd2"],
+    tags=["gcp", "bigquery", "customer", "etl"],
 ) as dag:
 
-    # 1. Create Bronze table if needed.
-    create_bronze = BigQueryInsertJobOperator(
+    # --------------------------------------------------
+    # TASK 1: CREATE BRONZE TABLE
+    # --------------------------------------------------
+
+    create_bronze_table = BigQueryInsertJobOperator(
         task_id="create_bronze_table",
-        project_id=PROJECT_ID,
         configuration={
             "query": {
                 "query": read_sql("Bronze.sql"),
                 "useLegacySql": False,
             }
         },
+        location=BQ_LOCATION,
     )
 
-    # 2. Create Golden table if needed.
-    create_golden = BigQueryInsertJobOperator(
+    # --------------------------------------------------
+    # TASK 2: CREATE GOLDEN TABLE
+    # --------------------------------------------------
+
+    create_golden_table = BigQueryInsertJobOperator(
         task_id="create_golden_table",
-        project_id=PROJECT_ID,
         configuration={
             "query": {
                 "query": read_sql("Golden_create.sql"),
                 "useLegacySql": False,
             }
         },
+        location=BQ_LOCATION,
     )
 
-    # 3. Create audit tables if needed.
+    # --------------------------------------------------
+    # TASK 3: CREATE AUDIT TABLES
+    # --------------------------------------------------
+
     create_audit_tables = BigQueryInsertJobOperator(
         task_id="create_audit_tables",
-        project_id=PROJECT_ID,
         configuration={
             "query": {
                 "query": read_sql("Audit.sql"),
                 "useLegacySql": False,
             }
         },
+        location=BQ_LOCATION,
     )
 
-    # 4. Load customers.csv from GCS into Bronze.
+    # --------------------------------------------------
+    # TASK 4: LOAD GCS CSV INTO BRONZE
+    # --------------------------------------------------
+
+    
     load_bronze = GCSToBigQueryOperator(
         task_id="load_gcs_to_bronze",
-        bucket=BUCKET,
-        source_objects=[SOURCE_OBJECT],
+        bucket=SOURCE_BUCKET,
+        source_objects=[SOURCE_FILE],
         destination_project_dataset_table=BRONZE_TABLE,
         source_format="CSV",
         skip_leading_rows=1,
         autodetect=False,
+        schema_fields=[
+            {
+                "name": "Customer_Id",
+                "type": "STRING",
+                "mode": "NULLABLE",
+            },
+            {
+                "name": "Customer_name",
+                "type": "STRING",
+                "mode": "NULLABLE",
+            },
+            {
+                "name": "Email",
+                "type": "STRING",
+                "mode": "NULLABLE",
+            },
+            {
+                "name": "Phone",
+                "type": "STRING",
+                "mode": "NULLABLE",
+            },
+            {
+                "name": "Address_",
+                "type": "STRING",
+                "mode": "NULLABLE",
+            },
+            {
+                "name": "Join_date",
+                "type": "STRING",
+                "mode": "NULLABLE",
+            },
+        ],
         write_disposition="WRITE_APPEND",
-        create_disposition="CREATE_IF_NEEDED",
-        project_id=PROJECT_ID,
+        create_disposition="CREATE_NEVER",
+        location="US",
     )
 
-    # 5. Record Bronze audit information.
+
+    # --------------------------------------------------
+    # TASK 5: BRONZE AUDIT
+    # --------------------------------------------------
+
     audit_bronze = BigQueryInsertJobOperator(
         task_id="audit_bronze",
-        project_id=PROJECT_ID,
         configuration={
             "query": {
                 "query": f"""
                     INSERT INTO `{BRONZE_AUDIT_TABLE}`
-                    (run_timestamp, table_name, row_count, status)
+                    (
+                        run_timestamp,
+                        table_name,
+                        row_count,
+                        status
+                    )
                     SELECT
                         CURRENT_TIMESTAMP(),
                         '{BRONZE_TABLE}',
@@ -132,29 +227,40 @@ with DAG(
                 "useLegacySql": False,
             }
         },
+        location=BQ_LOCATION,
     )
 
-    # 6. Transform Bronze into Silver.
+    # --------------------------------------------------
+    # TASK 6: LOAD SILVER
+    # --------------------------------------------------
+
     load_silver = BigQueryInsertJobOperator(
         task_id="load_silver",
-        project_id=PROJECT_ID,
         configuration={
             "query": {
                 "query": read_sql("Silver.sql"),
                 "useLegacySql": False,
             }
         },
+        location=BQ_LOCATION,
     )
 
-    # 7. Record Silver audit information.
+    # --------------------------------------------------
+    # TASK 7: SILVER AUDIT
+    # --------------------------------------------------
+
     audit_silver = BigQueryInsertJobOperator(
         task_id="audit_silver",
-        project_id=PROJECT_ID,
         configuration={
             "query": {
                 "query": f"""
                     INSERT INTO `{SILVER_AUDIT_TABLE}`
-                    (run_timestamp, table_name, row_count, status)
+                    (
+                        run_timestamp,
+                        table_name,
+                        row_count,
+                        status
+                    )
                     SELECT
                         CURRENT_TIMESTAMP(),
                         '{SILVER_TABLE}',
@@ -165,35 +271,52 @@ with DAG(
                 "useLegacySql": False,
             }
         },
+        location=BQ_LOCATION,
     )
 
-    # 8. Expire old Golden versions when details change.
+    # --------------------------------------------------
+    # TASK 8: EXPIRE CHANGED GOLDEN RECORDS
+    # SCD TYPE 2
+    # --------------------------------------------------
+
     expire_golden = BigQueryInsertJobOperator(
-        task_id="expire_old_customer_versions",
-        project_id=PROJECT_ID,
+        task_id="expire_golden_records",
         configuration={
             "query": {
                 "query": read_sql("Golden_Expire.sql"),
                 "useLegacySql": False,
             }
         },
+        location=BQ_LOCATION,
     )
 
-    # 9. Insert new customers and new SCD Type 2 versions.
+    # --------------------------------------------------
+    # TASK 9: INSERT NEW GOLDEN VERSIONS
+    # --------------------------------------------------
+
     insert_golden = BigQueryInsertJobOperator(
-        task_id="insert_new_customer_versions",
-        project_id=PROJECT_ID,
+        task_id="insert_golden_records",
         configuration={
             "query": {
                 "query": read_sql("Golden_Insert.sql"),
                 "useLegacySql": False,
             }
         },
+        location=BQ_LOCATION,
     )
 
-    # Execute setup tasks first, then the pipeline in sequence.
-    [create_bronze, create_golden, create_audit_tables] >> load_bronze
+    # ==================================================
+    # 5. TASK DEPENDENCIES
+    # ==================================================
 
+    # Table creation tasks must finish before the load.
+    [
+        create_bronze_table,
+        create_golden_table,
+        create_audit_tables,
+    ] >> load_bronze
+
+    # Main ETL flow.
     (
         load_bronze
         >> audit_bronze

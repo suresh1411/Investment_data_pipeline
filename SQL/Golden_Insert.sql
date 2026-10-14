@@ -14,11 +14,11 @@ AND T.Is_Current = TRUE
 WHEN NOT MATCHED THEN
 INSERT (
   Customer_Id, Customer_name, Email, Phone, Address_,
-  Join_date, Loaded_timestamp, Team_Id,
+  Join_date, Loaded_timestamp,Team_id,
   Effective_Start_Date, Effective_End_Date, Is_Current
 )
 VALUES (
   S.Customer_Id, S.Customer_name, S.Email, S.Phone, S.Address_,
-  S.Join_date, CURRENT_TIMESTAMP(), S.Team_Id,
+  S.Join_date,CURRENT_TIMESTAMP(),Team_id,
   CURRENT_TIMESTAMP(), TIMESTAMP '9999-12-31 23:59:59+00', TRUE
 );

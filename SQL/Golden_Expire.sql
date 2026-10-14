@@ -17,7 +17,7 @@ WHEN MATCHED AND (
   OR T.Phone IS DISTINCT FROM S.Phone
   OR T.Address_ IS DISTINCT FROM S.Address_
   OR T.Join_date IS DISTINCT FROM S.Join_date
-  OR T.Team_Id IS DISTINCT FROM S.Team_Id
+  OR t.Team_id IS DISTINCT FROM S.Team_id
 )
 THEN UPDATE SET
   T.Is_Current = FALSE,

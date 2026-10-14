@@ -3,7 +3,7 @@ CREATE OR REPLACE TABLE
   `suresh-dataengineering.Silver_layer.customers_stage_data`
 AS
 SELECT
-  Customer_Id,
+SAFE_CAST(Customer_Id as int64) as Customer_Id,
   Customer_name,
   Email,
   Phone,
@@ -15,7 +15,7 @@ SELECT
     SAFE.PARSE_DATE('%d/%m/%Y', Join_date)
   ) AS Join_date,
   CURRENT_TIMESTAMP() AS Loaded_timestamp,
-  SAFE_CAST(Team_Id AS INT64) AS Team_Id
+  123 AS Team_id
 FROM
   `suresh-dataengineering.Bronze_layer.customers_raw_data`
 WHERE

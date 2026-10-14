@@ -8,6 +8,4 @@ CREATE TABLE IF NOT EXISTS
   Phone STRING,
   Address_ STRING,
   Join_date STRING,
-  Loaded_timestamp TIMESTAMP,
-  Team_Id STRING
 );
