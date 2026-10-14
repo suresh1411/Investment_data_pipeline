@@ -1,0 +1,19 @@
+
+steps:
+  # Step 1: Deploy the Airflow DAG to Cloud Composer
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args:
+      - cp
+      - DAG/Invest_pipeline_dag.py
+      - gs://us-central1-sureshdag-ad6ff8b5-bucket/dags/
+
+  # Step 2: Deploy SQL files to the Composer SQL folder
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args:
+      - '-m'
+      - cp
+      - 'SQL/*.sql'
+      - gs://us-central1-sureshdag-ad6ff8b5-bucket/dags/SQL/
+
+options:
+  logging: CLOUD_LOGGING_ONLY
