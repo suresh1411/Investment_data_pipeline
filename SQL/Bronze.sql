@@ -7,5 +7,5 @@ CREATE TABLE IF NOT EXISTS
   Email STRING,
   Phone STRING,
   Address_ STRING,
-  Join_date STRING,
+  Join_date STRING
 );
