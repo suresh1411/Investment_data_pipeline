@@ -260,7 +260,7 @@ with DAG(
                         table_name,
                         row_count,
                         status,
-                        total_row_count
+                        Total_records_count
                       )
                     SELECT
                       CURRENT_TIMESTAMP(),
@@ -318,7 +318,7 @@ with DAG(
                         table_name,
                         row_count,
                         status,
-                        total_row_count
+                        Total_records_count
                       )
                     SELECT
                       CURRENT_TIMESTAMP(),
