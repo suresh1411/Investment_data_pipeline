@@ -1,4 +1,3 @@
-
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -39,6 +38,9 @@ BRONZE_AUDIT_TABLE = (
 SILVER_AUDIT_TABLE = (
     "suresh-dataengineering.Audit_layer.silver_audit_table"
 )
+GOLDEN_AUDIT_TABLE = (
+    "suresh-dataengineering.Audit_layer.Golden_audit_table"
+)
 
 
 # ==================================================
@@ -71,7 +73,7 @@ def read_sql(filename: str) -> str:
 
 
 # ==================================================
-# 3. GET THE ROW COUNT FOR THE CURRENT BRONZE LOAD
+# 3. GET ROW COUNT FOR THE CURRENT BRONZE LOAD
 # ==================================================
 def get_bronze_ingested_count(**context) -> int:
     """
@@ -119,7 +121,58 @@ def get_bronze_ingested_count(**context) -> int:
 
 
 # ==================================================
-# 4. DEFAULT ARGUMENTS
+# 4. GET ROW COUNT INSERTED INTO GOLDEN THIS RUN
+# ==================================================
+def get_golden_ingested_count(**context) -> int:
+    """
+    Get the number of rows affected by the Golden INSERT job.
+    This is the current job's inserted-row count, not the total
+    number of rows already stored in Golden.
+    """
+    ti = context["ti"]
+
+    golden_job_id = ti.xcom_pull(
+        task_ids="insert_golden_records",
+        key="return_value",
+    )
+
+    if not golden_job_id:
+        raise ValueError(
+            "Golden insert job ID was not found in XCom."
+        )
+
+    hook = BigQueryHook(
+        gcp_conn_id="google_cloud_default",
+        location=BQ_LOCATION,
+        use_legacy_sql=False,
+    )
+
+    job = hook.get_job(
+        job_id=golden_job_id,
+        project_id=PROJECT_ID,
+        location=BQ_LOCATION,
+    )
+
+    affected_rows = job.num_dml_affected_rows
+
+    if affected_rows is None:
+        raise ValueError(
+            "BigQuery did not return the affected-row count "
+            f"for Golden insert job {golden_job_id}."
+        )
+
+    ingested_count = int(affected_rows)
+
+    ti.log.info(
+        "Rows inserted by this Golden run: %s",
+        ingested_count,
+    )
+
+    return ingested_count
+
+
+# ==================================================
+# 5. DEFAULT ARGUMENTS
 # ==================================================
 default_args = {
     "owner": "data-engineering",
@@ -130,13 +183,11 @@ default_args = {
 
 
 # ==================================================
-# 5. DAG DEFINITION
+# 6. DAG DEFINITION
 # ==================================================
 with DAG(
     dag_id="investment_customer_pipeline",
-    description=(
-        "GCS to BigQuery Bronze, Silver and Golden pipeline"
-    ),
+    description="GCS to BigQuery Bronze, Silver and Golden pipeline",
     default_args=default_args,
     start_date=datetime(2026, 10, 1),
     schedule="0 2 * * *",
@@ -175,6 +226,7 @@ with DAG(
 
     # --------------------------------------------------
     # TASK 3: CREATE AUDIT TABLES
+    # Audit.sql should create Bronze, Silver and Golden audits.
     # --------------------------------------------------
     create_audit_tables = BigQueryInsertJobOperator(
         task_id="create_audit_tables",
@@ -236,7 +288,7 @@ with DAG(
     )
 
     # --------------------------------------------------
-    # TASK 5: GET ROWS LOADED IN THIS RUN
+    # TASK 5: GET ROWS LOADED IN THIS BRONZE RUN
     # --------------------------------------------------
     bronze_ingested_count = PythonOperator(
         task_id="get_bronze_ingested_count",
@@ -245,8 +297,8 @@ with DAG(
 
     # --------------------------------------------------
     # TASK 6: BRONZE AUDIT
-    # row_count       = rows loaded in this run
-    # total_row_count = total rows in Bronze after the load
+    # row_count = rows loaded in this run
+    # Total_records_count = total rows in Bronze after load
     # --------------------------------------------------
     audit_bronze = BigQueryInsertJobOperator(
         task_id="audit_bronze",
@@ -255,20 +307,20 @@ with DAG(
                 "query": """
                     INSERT INTO
                       `suresh-dataengineering.Audit_layer.bronze_audit_table`
-                      (
-                        run_timestamp,
-                        table_name,
-                        row_count,
-                        status,
-                        Total_records_count
-                      )
+                    (
+                      run_timestamp,
+                      table_name,
+                      row_count,
+                      status,
+                      Total_records_count
+                    )
                     SELECT
                       CURRENT_TIMESTAMP(),
                       'Bronze_layer.customers_raw_data',
                       CAST(
                         {{ ti.xcom_pull(
-                             task_ids='get_bronze_ingested_count'
-                           ) | int }}
+                            task_ids='get_bronze_ingested_count'
+                        ) | int }}
                         AS INT64
                       ),
                       'SUCCESS',
@@ -286,8 +338,7 @@ with DAG(
 
     # --------------------------------------------------
     # TASK 7: LOAD SILVER
-    # This assumes Silver.sql rebuilds the complete Silver
-    # table using CREATE OR REPLACE TABLE.
+    # Assumes Silver.sql rebuilds the complete Silver table.
     # --------------------------------------------------
     load_silver = BigQueryInsertJobOperator(
         task_id="load_silver",
@@ -302,9 +353,7 @@ with DAG(
 
     # --------------------------------------------------
     # TASK 8: SILVER AUDIT
-    # Since Silver is rebuilt in full:
-    # row_count       = rows produced by this run
-    # total_row_count = rows currently stored in Silver
+    # The resulting Silver count is recorded in both columns.
     # --------------------------------------------------
     audit_silver = BigQueryInsertJobOperator(
         task_id="audit_silver",
@@ -313,13 +362,13 @@ with DAG(
                 "query": """
                     INSERT INTO
                       `suresh-dataengineering.Audit_layer.silver_audit_table`
-                      (
-                        run_timestamp,
-                        table_name,
-                        row_count,
-                        status,
-                        Total_records_count
-                      )
+                    (
+                      run_timestamp,
+                      table_name,
+                      row_count,
+                      status,
+                      Total_records_count
+                    )
                     SELECT
                       CURRENT_TIMESTAMP(),
                       'Silver_layer.customers_stage_data',
@@ -363,25 +412,76 @@ with DAG(
         location=BQ_LOCATION,
     )
 
+    # --------------------------------------------------
+    # TASK 11: GET ROWS INSERTED INTO GOLDEN THIS RUN
+    # --------------------------------------------------
+    golden_ingested_count = PythonOperator(
+        task_id="get_golden_ingested_count",
+        python_callable=get_golden_ingested_count,
+    )
+
+    # --------------------------------------------------
+    # TASK 12: GOLDEN AUDIT
+    # ingest_row_count = rows inserted by the current INSERT job
+    # Total_records_count = all rows in Golden after processing
+    # --------------------------------------------------
+    audit_golden = BigQueryInsertJobOperator(
+        task_id="audit_golden",
+        configuration={
+            "query": {
+                "query": """
+                    INSERT INTO
+                      `suresh-dataengineering.Audit_layer.Golden_audit_table`
+                    (
+                      run_timestamp,
+                      table_name,
+                      ingest_row_count,
+                      Status,
+                      Total_records_count
+                    )
+                    SELECT
+                      CURRENT_TIMESTAMP(),
+                      'Golden_layer.Customers_curated_data',
+                      CAST(
+                        {{ ti.xcom_pull(
+                            task_ids='get_golden_ingested_count'
+                        ) | int }}
+                        AS INT64
+                      ),
+                      'SUCCESS',
+                      (
+                        SELECT COUNT(*)
+                        FROM
+                          `suresh-dataengineering.Golden_layer.Customers_curated_data`
+                      )
+                """,
+                "useLegacySql": False,
+            }
+        },
+        location=BQ_LOCATION,
+    )
+
     # ==================================================
-    # 6. TASK DEPENDENCIES
+    # 7. TASK DEPENDENCIES
     # ==================================================
 
-    # These three setup tasks can run in parallel.
+    # Setup tasks run before the Bronze load.
     [
         create_bronze_table,
         create_golden_table,
         create_audit_tables,
     ] >> load_bronze
 
-    # Load Bronze, capture the load count, and audit it.
+    # Bronze: load -> count -> audit.
     load_bronze >> bronze_ingested_count >> audit_bronze
 
-    # Continue through Silver and Golden sequentially.
+    # Silver -> Golden SCD Type 2 -> Golden audit.
     (
         audit_bronze
         >> load_silver
         >> audit_silver
         >> expire_golden
         >> insert_golden
+        >> golden_ingested_count
+        >> audit_golden
     )
