@@ -18,7 +18,7 @@ from airflow.providers.google.cloud.operators.bigquery import (
 # ==================================================
 PROJECT_ID = "suresh-dataengineering"
 SOURCE_BUCKET = "source_landing_zone"
-SOURCE_FILE = "customers.csv"
+SOURCE_FILE = "customers2.csv"
 
 # BigQuery datasets are in the US multi-region.
 BQ_LOCATION = "US"
