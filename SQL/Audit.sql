@@ -4,7 +4,8 @@ CREATE TABLE IF NOT EXISTS
   run_timestamp TIMESTAMP,
   table_name STRING,
   row_count INT64,
-  status STRING
+  status STRING,
+  Total_records_count int64,
 );
 
 CREATE TABLE IF NOT EXISTS
@@ -13,5 +14,6 @@ CREATE TABLE IF NOT EXISTS
   run_timestamp TIMESTAMP,
   table_name STRING,
   row_count INT64,
-  status STRING
+  status STRING,
+  Total_records_count int64,
 );
