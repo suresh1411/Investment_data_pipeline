@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
 from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
     GCSToBigQueryOperator,
 )
@@ -14,25 +16,19 @@ from airflow.providers.google.cloud.operators.bigquery import (
 # ==================================================
 # 1. CONFIGURATION
 # ==================================================
-
 PROJECT_ID = "suresh-dataengineering"
-
-# Source GCS file
 SOURCE_BUCKET = "source_landing_zone"
 SOURCE_FILE = "customers.csv"
 
-# BigQuery location: all datasets are in US
+# BigQuery datasets are in the US multi-region.
 BQ_LOCATION = "US"
 
-# BigQuery tables
 BRONZE_TABLE = (
     "suresh-dataengineering.Bronze_layer.customers_raw_data"
 )
-
 SILVER_TABLE = (
     "suresh-dataengineering.Silver_layer.customers_stage_data"
 )
-
 GOLDEN_TABLE = (
     "suresh-dataengineering.Golden_layer.Customers_curated_data"
 )
@@ -40,17 +36,14 @@ GOLDEN_TABLE = (
 BRONZE_AUDIT_TABLE = (
     "suresh-dataengineering.Audit_layer.bronze_audit_table"
 )
-
 SILVER_AUDIT_TABLE = (
     "suresh-dataengineering.Audit_layer.silver_audit_table"
 )
 
 
 # ==================================================
-# 2. SQL FILE PATH
-# ==================================================
-
-# Expected structure:
+# 2. SQL FILE PATHS
+# Composer bucket structure:
 # dags/
 #   Invest_pipeline_dag.py
 #   SQL/
@@ -60,14 +53,13 @@ SILVER_AUDIT_TABLE = (
 #     Golden_Expire.sql
 #     Golden_Insert.sql
 #     Audit.sql
-
+# ==================================================
 DAG_DIR = Path(__file__).resolve().parent
 SQL_DIR = DAG_DIR / "SQL"
 
 
-def read_sql(filename):
-    """Read SQL files uploaded beside this DAG."""
-
+def read_sql(filename: str) -> str:
+    """Read a SQL file from the SQL folder beside this DAG."""
     sql_path = SQL_DIR / filename
 
     if not sql_path.is_file():
@@ -79,9 +71,56 @@ def read_sql(filename):
 
 
 # ==================================================
-# 3. DEFAULT ARGUMENTS
+# 3. GET THE ROW COUNT FOR THE CURRENT BRONZE LOAD
 # ==================================================
+def get_bronze_ingested_count(**context) -> int:
+    """
+    Get the output_rows value from this run's BigQuery load job.
+    This is the number of rows loaded by this job, not the
+    accumulated number of rows in the Bronze table.
+    """
+    ti = context["ti"]
 
+    load_job_id = ti.xcom_pull(
+        task_ids="load_gcs_to_bronze",
+        key="job_id",
+    )
+
+    if not load_job_id:
+        raise ValueError(
+            "BigQuery load job ID was not found in XCom."
+        )
+
+    hook = BigQueryHook(
+        gcp_conn_id="google_cloud_default",
+        location=BQ_LOCATION,
+        use_legacy_sql=False,
+    )
+
+    job = hook.get_job(
+        job_id=load_job_id,
+        project_id=PROJECT_ID,
+        location=BQ_LOCATION,
+    )
+
+    if job.output_rows is None:
+        raise ValueError(
+            f"No output_rows value returned by job {load_job_id}."
+        )
+
+    ingested_count = int(job.output_rows)
+
+    ti.log.info(
+        "Rows loaded in this Bronze run: %s",
+        ingested_count,
+    )
+
+    return ingested_count
+
+
+# ==================================================
+# 4. DEFAULT ARGUMENTS
+# ==================================================
 default_args = {
     "owner": "data-engineering",
     "depends_on_past": False,
@@ -91,12 +130,13 @@ default_args = {
 
 
 # ==================================================
-# 4. DAG DEFINITION
+# 5. DAG DEFINITION
 # ==================================================
-
 with DAG(
     dag_id="investment_customer_pipeline",
-    description="GCS to BigQuery Bronze, Silver and Golden pipeline",
+    description=(
+        "GCS to BigQuery Bronze, Silver and Golden pipeline"
+    ),
     default_args=default_args,
     start_date=datetime(2026, 10, 1),
     schedule="0 2 * * *",
@@ -108,7 +148,6 @@ with DAG(
     # --------------------------------------------------
     # TASK 1: CREATE BRONZE TABLE
     # --------------------------------------------------
-
     create_bronze_table = BigQueryInsertJobOperator(
         task_id="create_bronze_table",
         configuration={
@@ -123,7 +162,6 @@ with DAG(
     # --------------------------------------------------
     # TASK 2: CREATE GOLDEN TABLE
     # --------------------------------------------------
-
     create_golden_table = BigQueryInsertJobOperator(
         task_id="create_golden_table",
         configuration={
@@ -138,7 +176,6 @@ with DAG(
     # --------------------------------------------------
     # TASK 3: CREATE AUDIT TABLES
     # --------------------------------------------------
-
     create_audit_tables = BigQueryInsertJobOperator(
         task_id="create_audit_tables",
         configuration={
@@ -151,10 +188,8 @@ with DAG(
     )
 
     # --------------------------------------------------
-    # TASK 4: LOAD GCS CSV INTO BRONZE
+    # TASK 4: LOAD CSV FROM GCS INTO BRONZE
     # --------------------------------------------------
-
-    
     load_bronze = GCSToBigQueryOperator(
         task_id="load_gcs_to_bronze",
         bucket=SOURCE_BUCKET,
@@ -197,32 +232,51 @@ with DAG(
         ],
         write_disposition="WRITE_APPEND",
         create_disposition="CREATE_NEVER",
-        location="US",
+        location=BQ_LOCATION,
     )
 
+    # --------------------------------------------------
+    # TASK 5: GET ROWS LOADED IN THIS RUN
+    # --------------------------------------------------
+    bronze_ingested_count = PythonOperator(
+        task_id="get_bronze_ingested_count",
+        python_callable=get_bronze_ingested_count,
+    )
 
     # --------------------------------------------------
-    # TASK 5: BRONZE AUDIT
+    # TASK 6: BRONZE AUDIT
+    # row_count       = rows loaded in this run
+    # total_row_count = total rows in Bronze after the load
     # --------------------------------------------------
-
     audit_bronze = BigQueryInsertJobOperator(
         task_id="audit_bronze",
         configuration={
             "query": {
-                "query": f"""
-                    INSERT INTO `{BRONZE_AUDIT_TABLE}`
-                    (
+                "query": """
+                    INSERT INTO
+                      `suresh-dataengineering.Audit_layer.bronze_audit_table`
+                      (
                         run_timestamp,
                         table_name,
                         row_count,
-                        status
-                    )
+                        status,
+                        total_row_count
+                      )
                     SELECT
-                        CURRENT_TIMESTAMP(),
-                        '{BRONZE_TABLE}',
-                        COUNT(*),
-                        'SUCCESS'
-                    FROM `{BRONZE_TABLE}`
+                      CURRENT_TIMESTAMP(),
+                      'Bronze_layer.customers_raw_data',
+                      CAST(
+                        {{ ti.xcom_pull(
+                             task_ids='get_bronze_ingested_count'
+                           ) | int }}
+                        AS INT64
+                      ),
+                      'SUCCESS',
+                      (
+                        SELECT COUNT(*)
+                        FROM
+                          `suresh-dataengineering.Bronze_layer.customers_raw_data`
+                      )
                 """,
                 "useLegacySql": False,
             }
@@ -231,9 +285,10 @@ with DAG(
     )
 
     # --------------------------------------------------
-    # TASK 6: LOAD SILVER
+    # TASK 7: LOAD SILVER
+    # This assumes Silver.sql rebuilds the complete Silver
+    # table using CREATE OR REPLACE TABLE.
     # --------------------------------------------------
-
     load_silver = BigQueryInsertJobOperator(
         task_id="load_silver",
         configuration={
@@ -246,27 +301,33 @@ with DAG(
     )
 
     # --------------------------------------------------
-    # TASK 7: SILVER AUDIT
+    # TASK 8: SILVER AUDIT
+    # Since Silver is rebuilt in full:
+    # row_count       = rows produced by this run
+    # total_row_count = rows currently stored in Silver
     # --------------------------------------------------
-
     audit_silver = BigQueryInsertJobOperator(
         task_id="audit_silver",
         configuration={
             "query": {
-                "query": f"""
-                    INSERT INTO `{SILVER_AUDIT_TABLE}`
-                    (
+                "query": """
+                    INSERT INTO
+                      `suresh-dataengineering.Audit_layer.silver_audit_table`
+                      (
                         run_timestamp,
                         table_name,
                         row_count,
-                        status
-                    )
+                        status,
+                        total_row_count
+                      )
                     SELECT
-                        CURRENT_TIMESTAMP(),
-                        '{SILVER_TABLE}',
-                        COUNT(*),
-                        'SUCCESS'
-                    FROM `{SILVER_TABLE}`
+                      CURRENT_TIMESTAMP(),
+                      'Silver_layer.customers_stage_data',
+                      COUNT(*),
+                      'SUCCESS',
+                      COUNT(*)
+                    FROM
+                      `suresh-dataengineering.Silver_layer.customers_stage_data`
                 """,
                 "useLegacySql": False,
             }
@@ -275,10 +336,8 @@ with DAG(
     )
 
     # --------------------------------------------------
-    # TASK 8: EXPIRE CHANGED GOLDEN RECORDS
-    # SCD TYPE 2
+    # TASK 9: EXPIRE CHANGED GOLDEN RECORDS (SCD TYPE 2)
     # --------------------------------------------------
-
     expire_golden = BigQueryInsertJobOperator(
         task_id="expire_golden_records",
         configuration={
@@ -291,9 +350,8 @@ with DAG(
     )
 
     # --------------------------------------------------
-    # TASK 9: INSERT NEW GOLDEN VERSIONS
+    # TASK 10: INSERT NEW GOLDEN VERSIONS
     # --------------------------------------------------
-
     insert_golden = BigQueryInsertJobOperator(
         task_id="insert_golden_records",
         configuration={
@@ -306,20 +364,22 @@ with DAG(
     )
 
     # ==================================================
-    # 5. TASK DEPENDENCIES
+    # 6. TASK DEPENDENCIES
     # ==================================================
 
-    # Table creation tasks must finish before the load.
+    # These three setup tasks can run in parallel.
     [
         create_bronze_table,
         create_golden_table,
         create_audit_tables,
     ] >> load_bronze
 
-    # Main ETL flow.
+    # Load Bronze, capture the load count, and audit it.
+    load_bronze >> bronze_ingested_count >> audit_bronze
+
+    # Continue through Silver and Golden sequentially.
     (
-        load_bronze
-        >> audit_bronze
+        audit_bronze
         >> load_silver
         >> audit_silver
         >> expire_golden
