@@ -1,20 +1,26 @@
-
-
 steps:
-  # Deploy the main Airflow DAG
-  - name: 'gcr.io/cloud-builders/gsutil'
+  # Deploy the DAG file to the new Cloud Composer environment.
+  - id: deploy-investment-dag
+    name: gcr.io/cloud-builders/gsutil
     args:
       - cp
       - DAG/Invest_pipeline_dag.py
-      - gs://us-central1-investmentdata-1bc85c8e-bucket/dags/
+      - gs://${_COMPOSER_BUCKET}/dags/Invest_pipeline_dag.py
 
-  # Deploy all SQL files
-  - name: 'gcr.io/cloud-builders/gsutil'
+  # Deploy SQL files beside the DAG.
+  - id: deploy-sql-files
+    name: gcr.io/cloud-builders/gsutil
     args:
-      - '-m'
-      - cp
-      - 'SQL/*.sql'
-      - gs://us-central1-investmentdata-1bc85c8e-bucket/dags/SQL/
+      - -m
+      - rsync
+      - -r
+      - SQL
+      - gs://${_COMPOSER_BUCKET}/dags/SQL
+
+substitutions:
+  _COMPOSER_BUCKET: us-central1-sureshdag-135f2b27-bucket
 
 options:
   logging: CLOUD_LOGGING_ONLY
+
+timeout: 600s
