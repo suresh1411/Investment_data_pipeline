@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS
   Join_date STRING
 );
  
-CREATE TABLE Products IF NOT EXISTS 
+CREATE TABLE  IF NOT EXISTS 
+    `suresh-dataengineering.Bronze_layer.Products_raw_data`
 (
   Product_id STRING,
   Product_name STRING,
