@@ -17,5 +17,5 @@ CREATE TABLE Products IF NOT EXISTS
   Category STRING,
   Price STRING,
   TIMESTAMP AS Loaded_timestamp
-)
+);
 
